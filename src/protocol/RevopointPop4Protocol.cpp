@@ -711,6 +711,7 @@ private:
         if (!colorEnabled()) {
             return;
         }
+#ifdef TJ_NUMINIT  // libjpeg-turbo >= 3.0: the tj3 API
         tjhandle tj = tj3Init(TJINIT_DECOMPRESS);
         if (!tj) {
             return;
@@ -729,6 +730,27 @@ private:
             }
         }
         tj3Destroy(tj);
+#else  // libjpeg-turbo 2.x (Ubuntu 24.04, Debian 12): the TurboJPEG 2 API
+        tjhandle tj = tjInitDecompress();
+        if (!tj) {
+            return;
+        }
+        int w = 0, h = 0, subsamp = 0, colorspace = 0;
+        if (tjDecompressHeader3(tj, lastColorJpeg_.data(),
+                                static_cast<unsigned long>(lastColorJpeg_.size()),
+                                &w, &h, &subsamp, &colorspace) == 0 &&
+            w > 0 && h > 0) {
+            std::vector<uint8_t> pixels(static_cast<size_t>(w) * h * 3);
+            if (tjDecompress2(tj, lastColorJpeg_.data(),
+                              static_cast<unsigned long>(lastColorJpeg_.size()),
+                              pixels.data(), w, 0, h, TJPF_RGB, 0) == 0) {
+                lastColorRgb_ = std::move(pixels);
+                colorWidth_ = w;
+                colorHeight_ = h;
+            }
+        }
+        tjDestroy(tj);
+#endif
 #endif
     }
 
