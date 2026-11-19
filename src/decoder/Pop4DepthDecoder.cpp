@@ -1,4 +1,5 @@
 #include "Pop4DepthDecoder.h"
+#include "util/CNumber.h"
 
 #include "Pop4StereoCuda.h"
 #include "decoder/StereoRig.h"
@@ -67,7 +68,7 @@ bool envFlag(const char* name, bool defaultValue) {
 float envFloat(const char* name, float defaultValue, float lo, float hi) {
     if (const char* value = std::getenv(name)) {
         char* end = nullptr;
-        const float parsed = std::strtof(value, &end);
+        const float parsed = util::strtofC(value, &end);
         if (end != value && std::isfinite(parsed) && parsed >= lo && parsed <= hi) {
             return parsed;
         }
@@ -648,7 +649,7 @@ RowRectification defaultPop4RowRectification() {
         size_t n = 0;
         while (n < parsed.size() && std::getline(ss, item, ',')) {
             char* end = nullptr;
-            parsed[n] = std::strtod(item.c_str(), &end);
+            parsed[n] = util::strtodC(item.c_str(), &end);
             if (end == item.c_str() || !std::isfinite(parsed[n])) {
                 break;
             }
@@ -673,7 +674,7 @@ protocol::ScannerCalibration makeApproximatePop4FullFieldCalibration() {
     double baselineMm = 28.0;
     if (const char* value = std::getenv("ALL3DSCAN_POP4_BASELINE_MM")) {
         char* end = nullptr;
-        const double parsed = std::strtod(value, &end);
+        const double parsed = util::strtodC(value, &end);
         if (end != value && parsed >= 5.0 && parsed <= 150.0 && std::isfinite(parsed)) {
             baselineMm = parsed;
         }
@@ -707,7 +708,7 @@ DisparityBias defaultPop4DisparityBias() {
         size_t n = 0;
         while (n < parsed.size() && std::getline(ss, item, ',')) {
             char* end = nullptr;
-            parsed[n] = std::strtod(item.c_str(), &end);
+            parsed[n] = util::strtodC(item.c_str(), &end);
             if (end == item.c_str() || !std::isfinite(parsed[n]) || std::fabs(parsed[n]) > 80.0) {
                 break;
             }

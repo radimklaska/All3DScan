@@ -1,6 +1,8 @@
 #include <catch2/catch_test_macros.hpp>
 
+#include <clocale>
 #include <cmath>
+#include <string>
 
 #include "decoder/StereoRig.h"
 
@@ -93,6 +95,33 @@ TEST_CASE("camparam.yaml parses and rectifies like cv::stereoRectify") {
     REQUIRE(std::fabs(my[100 * 320 + 40] - 97.8989f) < 2e-3f);
     REQUIRE(std::fabs(mx[400 * 320 + 300] - 299.26608f) < 2e-3f);
     REQUIRE(std::fabs(my[400 * 320 + 300] - 393.12256f) < 2e-3f);
+}
+
+TEST_CASE("camparam.yaml parses the same under a decimal-comma locale") {
+    // Qt switches the process to the system locale, so with LC_NUMERIC set to
+    // e.g. cs_CZ the C library reads "0.9393" as 0 and stops at the dot. The
+    // factory calibration must not depend on that.
+    const char* commaLocales[] = {"cs_CZ.UTF-8", "de_DE.UTF-8", "fr_FR.UTF-8"};
+    const std::string previous = std::setlocale(LC_NUMERIC, nullptr);
+    const char* chosen = nullptr;
+    for (const char* name : commaLocales) {
+        if (std::setlocale(LC_NUMERIC, name) && *std::localeconv()->decimal_point == ',') {
+            chosen = name;
+            break;
+        }
+    }
+    if (!chosen) {
+        std::setlocale(LC_NUMERIC, previous.c_str());
+        SKIP("no decimal-comma locale installed");
+    }
+    std::string error;
+    const auto rig = decoder::parseCamparamYaml(kYaml, &error);
+    std::setlocale(LC_NUMERIC, previous.c_str());
+    INFO("locale " << chosen << ", error: " << error);
+    REQUIRE(rig.has_value());
+    REQUIRE(std::fabs(rig->baselineMm() - std::sqrt(117.0 * 117 + 0.49 + 400)) < 1e-9);
+    REQUIRE(std::fabs(rig->R[0] - 0.9393609728855362) < 1e-15);
+    REQUIRE(std::fabs(rig->DL[3] - 3.0e-04) < 1e-15);
 }
 
 TEST_CASE("camparam.yaml parser rejects missing matrices") {
