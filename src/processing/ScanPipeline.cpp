@@ -1,4 +1,5 @@
 #include "ScanPipeline.h"
+#include "util/CNumber.h"
 
 #include <algorithm>
 #include <array>
@@ -750,7 +751,7 @@ private:
     static double envDouble(const char* name, double def, double lo, double hi) {
         if (const char* s = std::getenv(name)) {
             char* end = nullptr;
-            const double v = std::strtod(s, &end);
+            const double v = util::strtodC(s, &end);
             if (end != s && v >= lo && v <= hi) {
                 return v;
             }

@@ -34,6 +34,7 @@
 #include "usb/UsbDevice.h"
 #include "processing/ScanPipeline.h"
 #include "util/ResourcePaths.h"
+#include "util/CNumber.h"
 #include "protocol/ScannerProtocol.h"
 
 namespace {
@@ -763,7 +764,7 @@ int replayDumps(int argc, char** argv, const char* dir, const char* plyOut) {
                 cx /= cloud.points.size();
                 cz /= cloud.points.size();
             }
-            const double a = std::atof(orbit) * orbitIndex * 3.14159265358979 / 180.0;
+            const double a = revoscan::util::strtodC(orbit, nullptr) * orbitIndex * 3.14159265358979 / 180.0;
             const double c = std::cos(a), sn = std::sin(a);
             for (auto& p : cloud.points) {
                 const double x = p.x - cx, z = p.z - cz;

@@ -1,4 +1,5 @@
 #include "decoder/StereoRig.h"
+#include "util/CNumber.h"
 
 #include <cmath>
 #include <cstdlib>
@@ -84,7 +85,7 @@ bool readMatrix(const std::string& text, const std::string& name, std::array<dou
     std::string tok;
     while (in >> tok) {
         char* end = nullptr;
-        const double v = std::strtod(tok.c_str(), &end);
+        const double v = util::strtodC(tok.c_str(), &end);
         if (end == tok.c_str() || n >= N) {
             if (error) {
                 *error = "camparam: bad values in " + name;

@@ -1,4 +1,5 @@
 #include "PointCloud.h"
+#include "util/CNumber.h"
 
 #include <algorithm>
 #include <cmath>
@@ -62,7 +63,7 @@ PreviewDepthScale defaultPop4PreviewDepthScale() {
     PreviewDepthScale scale;
     if (const char* env = std::getenv("ALL3DSCAN_DEPTH_SCALE")) {
         char* end = nullptr;
-        const double parsed = std::strtod(env, &end);
+        const double parsed = util::strtodC(env, &end);
         if (end != env && parsed > 0.0 && std::isfinite(parsed)) {
             scale.depthScale = parsed;
         }
