@@ -121,15 +121,18 @@ sudo pacman -S --needed base-devel git rust python pkgconf libusb libjpeg-turbo
 sudo pacman -S --needed cuda   # optional: decodes depth on an NVIDIA GPU
 ```
 
-On Ubuntu or Debian (untested):
+On Ubuntu or Debian (built on Ubuntu 24.04):
 
 ```sh
 sudo apt-get install -y build-essential git pkg-config python3-venv \
-    libusb-1.0-0-dev libturbojpeg0-dev
+    libusb-1.0-0-dev libturbojpeg0-dev nlohmann-json3-dev
 ```
 
 plus Rust 1.88 or newer from [rustup.rs](https://rustup.rs). Distribution
-packages of Rust are often older than that.
+packages of Rust are often older than that. Ubuntu 24.04 also ships newer
+Rust as versioned packages that leave the default `rustc` alone:
+`sudo apt-get install -y rustc-1.97 cargo-1.97`, then put
+`/usr/lib/rust-1.97/bin` first on `PATH` for the build (below).
 
 `libusb` is what reaches the POP 4; without it, the app builds without
 scanner support. Without `libturbojpeg`, scans have no colour. Without CUDA,
