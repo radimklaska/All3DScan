@@ -39,6 +39,19 @@ public:
     // are kMinOverlap and kMaxRmseMm in FrameFusion.cpp.
     void setAcceptance(double minOverlap, double maxRmseMm);
     double minOverlap() const noexcept { return minOverlap_; }
+
+    // How frames are tracked and merged; 0 turns a limit off, which is the
+    // default for all but the search.
+    //  maxStepMm / maxStepDeg: refuse a pose further than this from the last
+    //    placed one (times the frames since, so tracking can catch up).
+    //  keyframeMm / keyframeDeg: a placed frame moves the pose, but goes into
+    //    the model only once the scanner has moved this far since the last
+    //    frame that did.
+    //  coarseSearchMm: how far the first ICP pass looks for a match (35).
+    void setTracking(double maxStepMm, double maxStepDeg, double keyframeMm, double keyframeDeg,
+                     double coarseSearchMm);
+    // Whether the last frame's pose was accepted, merged into the model or not.
+    bool lastPlaced() const noexcept { return lastPlaced_; }
     double maxRmseMm() const noexcept { return maxRmseMm_; }
 
     double lastOverlap() const noexcept { return lastOverlap_; }
@@ -60,6 +73,12 @@ public:
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
+    double maxStepMm_ = 0.0;
+    double maxStepDeg_ = 0.0;
+    double keyframeMm_ = 0.0;
+    double keyframeDeg_ = 0.0;
+    double coarseSearchMm_;
+    bool lastPlaced_ = false;
     double minOverlap_;
     double maxRmseMm_;
     double lastOverlap_ = 0.0;

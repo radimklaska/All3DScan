@@ -770,9 +770,20 @@ mod all3dscan_engine {
     #[pymethods]
     impl Fusion {
         #[new]
-        #[pyo3(signature = (voxel_mm = 1.0, min_overlap = None, max_rmse_mm = None))]
-        fn new(voxel_mm: f32, min_overlap: Option<f64>, max_rmse_mm: Option<f64>)
-            -> PyResult<Self> {
+        #[pyo3(signature = (voxel_mm = 1.0, min_overlap = None, max_rmse_mm = None,
+                            max_step_mm = 0.0, max_step_deg = 0.0, keyframe_mm = 0.0,
+                            keyframe_deg = 0.0, coarse_search_mm = 35.0))]
+        #[allow(clippy::too_many_arguments)]
+        fn new(
+            voxel_mm: f32,
+            min_overlap: Option<f64>,
+            max_rmse_mm: Option<f64>,
+            max_step_mm: f64,
+            max_step_deg: f64,
+            keyframe_mm: f64,
+            keyframe_deg: f64,
+            coarse_search_mm: f64,
+        ) -> PyResult<Self> {
             let mut fusion = fusion::Fusion::new(voxel_mm)
                 .map_err(|e| PyValueError::new_err(e.what().to_owned()))?;
             if min_overlap.is_some() || max_rmse_mm.is_some() {
@@ -781,6 +792,9 @@ mod all3dscan_engine {
                     .set_acceptance(min_overlap.unwrap_or(overlap), max_rmse_mm.unwrap_or(rmse))
                     .map_err(|e| PyValueError::new_err(e.what().to_owned()))?;
             }
+            fusion
+                .set_tracking(max_step_mm, max_step_deg, keyframe_mm, keyframe_deg, coarse_search_mm)
+                .map_err(|e| PyValueError::new_err(e.what().to_owned()))?;
             Ok(Self {
                 fusion: Mutex::new(fusion),
                 model_points: AtomicU64::new(0),
@@ -841,6 +855,7 @@ mod all3dscan_engine {
             self.model_points.store(fit.model_points, Ordering::Relaxed);
             let result = PyDict::new(py);
             result.set_item("merged", fit.merged)?;
+            result.set_item("placed", fit.placed)?;
             result.set_item("overlap", fit.overlap)?;
             result.set_item("rmse_mm", fit.rmse_mm)?;
             result.set_item("model_points", fit.model_points)?;

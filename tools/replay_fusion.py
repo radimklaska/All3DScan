@@ -10,6 +10,8 @@ compared on one scan instead of on a new scan each time:
     python tools/replay_fusion.py <recording> --frames all   # every frame, not just offered
     python tools/replay_fusion.py <recording> --grid 0.3,0.6,0.85 2.5,1.8,1.4
     python tools/replay_fusion.py <recording> --ply model.ply
+    python tools/replay_fusion.py <recording> --config max_step_mm=10,keyframe_mm=5 \
+                                              --config coarse_search_mm=15
 
 Overlap and RMSE are the fusion's own opinion of a fit, and a frame placed
 in the wrong orientation can score well on both, so this also reports what
@@ -51,8 +53,9 @@ def step_between(a: np.ndarray, b: np.ndarray) -> tuple[float, float]:
 
 def replay(recording: Path, frames: list[dict], which: str, voxel_mm: float,
            min_overlap: float | None, max_rmse_mm: float | None,
-           jump_mm: float, jump_deg: float) -> dict:
-    fusion = engine.Fusion(voxel_mm, min_overlap=min_overlap, max_rmse_mm=max_rmse_mm)
+           jump_mm: float, jump_deg: float, options: dict | None = None) -> dict:
+    fusion = engine.Fusion(voxel_mm, min_overlap=min_overlap, max_rmse_mm=max_rmse_mm,
+                           **(options or {}))
     fits, add_seconds = [], []
     last_pose = None
     last_time = None
@@ -70,7 +73,7 @@ def replay(recording: Path, frames: list[dict], which: str, voxel_mm: float,
                          data["normals"][::step], depth_mm=data["depth_mm"])
         add_seconds.append((time.perf_counter() - started, fit["model_points"]))
         fits.append((number, fit))
-        if fit["merged"]:
+        if fit.get("placed", fit["merged"]):
             pose = pose_matrix(fit["pose"])
             if first_pose is None:
                 first_pose = pose
@@ -79,10 +82,12 @@ def replay(recording: Path, frames: list[dict], which: str, voxel_mm: float,
                 steps.append((number, mm, deg, entry["arrived_s"] - last_time))
             last_pose, last_time = pose, entry["arrived_s"]
     merged = [fit for _n, fit in fits if fit["merged"]]
+    placed = [fit for _n, fit in fits if fit.get("placed", fit["merged"])]
     jumps = [s for s in steps if s[1] > jump_mm or s[2] > jump_deg]
     result = {
         "min_overlap": fusion.min_overlap, "max_rmse_mm": fusion.max_rmse_mm,
-        "frames": which, "given": len(fits), "merged": len(merged),
+        "frames": which, "given": len(fits), "merged": len(merged), "placed": len(placed),
+        "options": options or {},
         "model_points": fusion.model_points, "fits": fits, "steps": steps, "jumps": jumps,
         "add_seconds": add_seconds,
     }
@@ -115,13 +120,13 @@ def check_against_live(frames: list[dict], fits: list) -> str:
 
 def report(result: dict, verbose: bool) -> str:
     lines = [f"min_overlap={result['min_overlap']:.2f} max_rmse={result['max_rmse_mm']:.2f} mm "
-             f"frames={result['frames']}: merged {result['merged']}/{result['given']}, "
-             f"model {result['model_points']:,} points"]
+             f"frames={result['frames']} {result['options'] or ''}: placed {result['placed']}, "
+             f"merged {result['merged']}/{result['given']}, model {result['model_points']:,} points"]
     steps = result["steps"]
     if steps:
         mm = np.array([s[1] for s in steps])
         deg = np.array([s[2] for s in steps])
-        lines.append(f"  between merges: median {np.median(mm):.1f} mm / {np.median(deg):.2f} deg, "
+        lines.append(f"  between placed frames: median {np.median(mm):.1f} mm / {np.median(deg):.2f} deg, "
                      f"max {mm.max():.1f} mm / {deg.max():.2f} deg; "
                      f"{len(result['jumps'])} jump(s) over the limit")
         for number, step_mm, step_deg, seconds in result["jumps"][:10]:
@@ -169,6 +174,8 @@ def main() -> int:
     parser.add_argument("--jump-deg", type=float, default=10.0)
     parser.add_argument("--check", action="store_true",
                         help="compare with the fits the app recorded (use --frames offered)")
+    parser.add_argument("--config", action="append", default=[],
+                        help="tracking options, e.g. max_step_mm=10,keyframe_mm=5; repeat to compare")
     parser.add_argument("--ply", type=Path, help="write the fused model here")
     parser.add_argument("--verbose", action="store_true", help="one line per frame")
     args = parser.parse_args()
@@ -184,13 +191,16 @@ def main() -> int:
                  for r in args.grid[1].split(",")]
     else:
         pairs = [(args.min_overlap, args.max_rmse)]
-    for overlap, rmse in pairs:
+    configs = [dict((key, float(value)) for key, value in
+                    (item.split("=") for item in text.split(",") if item)) for text in args.config]
+    runs = [(o, r, c) for o, r in pairs for c in (configs or [{}])]
+    for overlap, rmse, options in runs:
         result = replay(args.recording, frames, args.frames, voxel, overlap, rmse,
-                        args.jump_mm, args.jump_deg)
+                        args.jump_mm, args.jump_deg, options)
         print(report(result, args.verbose))
         if args.check:
             print("  " + check_against_live(frames, result["fits"]))
-        if args.ply and len(pairs) == 1:
+        if args.ply and len(runs) == 1:
             write_ply(args.ply, result["cloud"])
             print(f"  wrote {args.ply}")
     return 0

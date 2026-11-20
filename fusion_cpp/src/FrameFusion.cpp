@@ -75,7 +75,9 @@ struct FrameFusion::Impl {
     pointcloud::PointCloud model;                           // metres, first frame's axes
     std::unique_ptr<processing::PlaneIcpTarget> target;     // the model, ready for ICP
     int sinceTargetBuilt = 0;
-    processing::RigidTransform pose; // where the last merged frame sat
+    processing::RigidTransform pose;       // where the last placed frame sat
+    processing::RigidTransform mergedPose; // where the last merged frame sat
+    int sincePlaced = 0;                   // frames refused since the last placed one
 
     float icpVoxelM() const { return modelVoxelM * kVoxelRatio; }
 
@@ -88,7 +90,8 @@ struct FrameFusion::Impl {
 };
 
 FrameFusion::FrameFusion(float voxel_mm)
-    : impl_(std::make_unique<Impl>()), minOverlap_(kMinOverlap), maxRmseMm_(kMaxRmseMm) {
+    : impl_(std::make_unique<Impl>()), coarseSearchMm_(kCoarseCorrDistM * kMmPerM),
+      minOverlap_(kMinOverlap), maxRmseMm_(kMaxRmseMm) {
     if (!(voxel_mm > 0.0f && voxel_mm <= 50.0f)) {
         throw std::invalid_argument("FrameFusion: voxel size must be 0 to 50 mm, got " +
                                     std::to_string(voxel_mm));
@@ -112,6 +115,23 @@ void FrameFusion::setAcceptance(double minOverlap, double maxRmseMm) {
     maxRmseMm_ = maxRmseMm;
 }
 
+void FrameFusion::setTracking(double maxStepMm, double maxStepDeg, double keyframeMm,
+                              double keyframeDeg, double coarseSearchMm) {
+    for (const double v : {maxStepMm, maxStepDeg, keyframeMm, keyframeDeg}) {
+        if (!(v >= 0.0 && v <= 1000.0)) {
+            throw std::invalid_argument("FrameFusion: step and keyframe limits must be 0 to 1000");
+        }
+    }
+    if (!(coarseSearchMm >= 1.0 && coarseSearchMm <= 200.0)) {
+        throw std::invalid_argument("FrameFusion: coarse search must be 1 to 200 mm");
+    }
+    maxStepMm_ = maxStepMm;
+    maxStepDeg_ = maxStepDeg;
+    keyframeMm_ = keyframeMm;
+    keyframeDeg_ = keyframeDeg;
+    coarseSearchMm_ = coarseSearchMm;
+}
+
 uint64_t FrameFusion::modelPoints() const noexcept {
     return impl_->model.points.size();
 }
@@ -121,8 +141,11 @@ void FrameFusion::clear() {
     impl_->target.reset();
     impl_->sinceTargetBuilt = 0;
     impl_->pose = processing::RigidTransform::identity();
+    impl_->mergedPose = processing::RigidTransform::identity();
+    impl_->sincePlaced = 0;
     lastOverlap_ = 0.0;
     lastRmseMm_ = 0.0;
+    lastPlaced_ = false;
     lastPose_ = poseInMm(processing::RigidTransform::identity(), kMmPerM);
 }
 
@@ -132,12 +155,16 @@ bool FrameFusion::add(const float* xyz, uint64_t points, const uint8_t* rgb) {
     }
     lastOverlap_ = 0.0;
     lastRmseMm_ = 0.0;
+    lastPlaced_ = false;
     pointcloud::PointCloud frame = toCloud(xyz, points, rgb);
 
     if (impl_->model.points.empty()) {
         // The first frame is the model, and fixes the axes the rest align to.
         impl_->model = processing::voxelDownsample(frame, impl_->modelVoxelM);
         impl_->pose = processing::RigidTransform::identity();
+        impl_->mergedPose = impl_->pose;
+        impl_->sincePlaced = 0;
+        lastPlaced_ = true;
         lastPose_ = poseInMm(impl_->pose, kMmPerM);
         impl_->rebuildTarget();
     } else {
@@ -151,7 +178,7 @@ bool FrameFusion::add(const float* xyz, uint64_t points, const uint8_t* rgb) {
         // Coarse first, to catch a frame that has moved since the last one,
         // then fine from where that left off. Both start at the last pose.
         processing::IcpOptions coarse;
-        coarse.maxCorrespondenceDistM = kCoarseCorrDistM;
+        coarse.maxCorrespondenceDistM = static_cast<float>(coarseSearchMm_ / kMmPerM);
         const auto rough = processing::icpPointToPlane(
             strided(source, kMaxIcpSourcePoints), *impl_->target, impl_->pose, coarse);
         processing::IcpOptions fine;
@@ -167,15 +194,39 @@ bool FrameFusion::add(const float* xyz, uint64_t points, const uint8_t* rgb) {
         lastOverlap_ = quality.overlap;
         lastRmseMm_ = quality.rmseM * kMmPerM;
         if (lastOverlap_ < minOverlap_ || lastRmseMm_ > maxRmseMm_) {
+            ++impl_->sincePlaced;
             return false; // lost: leave the model as it is rather than smear it
+        }
+        constexpr double kDegPerRad = 57.29577951308232;
+        // A hand moves the scanner only so far between frames; a pose further
+        // than that from the last one is ICP sliding, not the scanner moving.
+        const auto step = processing::inverted(impl_->pose) * pose;
+        const double allowance = 1.0 + impl_->sincePlaced;
+        if ((maxStepMm_ > 0.0 && step.translationNorm() * kMmPerM > maxStepMm_ * allowance) ||
+            (maxStepDeg_ > 0.0 && step.rotationAngle() * kDegPerRad > maxStepDeg_ * allowance)) {
+            ++impl_->sincePlaced;
+            return false;
+        }
+        impl_->pose = pose;
+        impl_->sincePlaced = 0;
+        lastPlaced_ = true;
+        lastPose_ = poseInMm(pose, kMmPerM);
+        // Placed, but nothing new to add while the scanner has barely moved:
+        // merging every frame of a still scanner only blurs the model.
+        if (keyframeMm_ > 0.0 || keyframeDeg_ > 0.0) {
+            const auto moved = processing::inverted(impl_->mergedPose) * pose;
+            const bool far = keyframeMm_ > 0.0 && moved.translationNorm() * kMmPerM >= keyframeMm_;
+            const bool turned = keyframeDeg_ > 0.0 && moved.rotationAngle() * kDegPerRad >= keyframeDeg_;
+            if (!far && !turned) {
+                return false;
+            }
         }
 
         auto placed = processing::transformed(frame, pose);
         impl_->model.points.insert(impl_->model.points.end(), placed.points.begin(),
                                    placed.points.end());
         impl_->model = processing::voxelDownsample(impl_->model, impl_->modelVoxelM);
-        impl_->pose = pose;
-        lastPose_ = poseInMm(pose, kMmPerM);
+        impl_->mergedPose = pose;
         if (++impl_->sinceTargetBuilt >= kTargetRefreshFrames) {
             impl_->rebuildTarget();
         }

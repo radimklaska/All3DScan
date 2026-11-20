@@ -51,6 +51,17 @@ mod ffi {
         fn min_overlap(self: &FrameFusion) -> f64;
         #[cxx_name = "maxRmseMm"]
         fn max_rmse_mm(self: &FrameFusion) -> f64;
+        #[cxx_name = "setTracking"]
+        fn set_tracking(
+            self: Pin<&mut FrameFusion>,
+            max_step_mm: f64,
+            max_step_deg: f64,
+            keyframe_mm: f64,
+            keyframe_deg: f64,
+            coarse_search_mm: f64,
+        ) -> Result<()>;
+        #[cxx_name = "lastPlaced"]
+        fn last_placed(self: &FrameFusion) -> bool;
     }
 }
 
@@ -96,6 +107,9 @@ impl From<ProcessingError> for FusionError {
 pub struct FrameFit {
     /// Whether the frame was aligned well enough to be merged.
     pub merged: bool,
+    /// Whether its pose was accepted; with keyframes on, a frame can be
+    /// placed without being merged.
+    pub placed: bool,
     /// The share of the frame's points lying on the model's surface, and
     /// their RMS distance from it. Both are 0 for the first frame, which
     /// becomes the model without being aligned to anything.
@@ -197,6 +211,7 @@ impl Fusion {
         pose.copy_from_slice(self.inner.last_pose().as_slice());
         Ok(FrameFit {
             merged,
+            placed: self.inner.last_placed(),
             overlap: self.inner.last_overlap(),
             rmse_mm: self.inner.last_rmse_mm(),
             model_points: self.model.points.len() as u64,
@@ -209,6 +224,25 @@ impl Fusion {
     pub fn set_acceptance(&mut self, min_overlap: f64, max_rmse_mm: f64)
         -> Result<(), cxx::Exception> {
         self.inner.pin_mut().set_acceptance(min_overlap, max_rmse_mm)
+    }
+
+    /// See FrameFusion::setTracking: step limits and keyframe distances (0 =
+    /// off) and the coarse ICP search, in millimetres and degrees.
+    pub fn set_tracking(
+        &mut self,
+        max_step_mm: f64,
+        max_step_deg: f64,
+        keyframe_mm: f64,
+        keyframe_deg: f64,
+        coarse_search_mm: f64,
+    ) -> Result<(), cxx::Exception> {
+        self.inner.pin_mut().set_tracking(
+            max_step_mm,
+            max_step_deg,
+            keyframe_mm,
+            keyframe_deg,
+            coarse_search_mm,
+        )
     }
 
     /// The current minimum overlap and maximum RMSE, as set_acceptance takes them.
