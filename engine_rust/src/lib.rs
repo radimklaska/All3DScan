@@ -770,10 +770,17 @@ mod all3dscan_engine {
     #[pymethods]
     impl Fusion {
         #[new]
-        #[pyo3(signature = (voxel_mm = 1.0))]
-        fn new(voxel_mm: f32) -> PyResult<Self> {
-            let fusion = fusion::Fusion::new(voxel_mm)
+        #[pyo3(signature = (voxel_mm = 1.0, min_overlap = None, max_rmse_mm = None))]
+        fn new(voxel_mm: f32, min_overlap: Option<f64>, max_rmse_mm: Option<f64>)
+            -> PyResult<Self> {
+            let mut fusion = fusion::Fusion::new(voxel_mm)
                 .map_err(|e| PyValueError::new_err(e.what().to_owned()))?;
+            if min_overlap.is_some() || max_rmse_mm.is_some() {
+                let (overlap, rmse) = fusion.acceptance();
+                fusion
+                    .set_acceptance(min_overlap.unwrap_or(overlap), max_rmse_mm.unwrap_or(rmse))
+                    .map_err(|e| PyValueError::new_err(e.what().to_owned()))?;
+            }
             Ok(Self {
                 fusion: Mutex::new(fusion),
                 model_points: AtomicU64::new(0),
@@ -837,6 +844,7 @@ mod all3dscan_engine {
             result.set_item("overlap", fit.overlap)?;
             result.set_item("rmse_mm", fit.rmse_mm)?;
             result.set_item("model_points", fit.model_points)?;
+            result.set_item("pose", fit.pose.to_vec())?;
             Ok(result)
         }
 
@@ -898,6 +906,18 @@ mod all3dscan_engine {
         #[getter]
         fn merged(&self) -> u64 {
             self.locked().merged()
+        }
+
+        /// The share of a frame's points that must lie on the model to merge it.
+        #[getter]
+        fn min_overlap(&self) -> f64 {
+            self.locked().acceptance().0
+        }
+
+        /// The RMS distance, in millimetres, above which a frame is left out.
+        #[getter]
+        fn max_rmse_mm(&self) -> f64 {
+            self.locked().acceptance().1
         }
     }
 

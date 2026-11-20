@@ -34,6 +34,13 @@ public:
     // How the last frame sat on the model: the share of its points lying on
     // the model's surface and their RMS distance from it. Both are 0 for the
     // first frame, which becomes the model without being aligned to anything.
+    // What a frame must reach to be merged: the share of its points within
+    // the overlap tolerance of the model, and their RMS distance. Defaults
+    // are kMinOverlap and kMaxRmseMm in FrameFusion.cpp.
+    void setAcceptance(double minOverlap, double maxRmseMm);
+    double minOverlap() const noexcept { return minOverlap_; }
+    double maxRmseMm() const noexcept { return maxRmseMm_; }
+
     double lastOverlap() const noexcept { return lastOverlap_; }
     double lastRmseMm() const noexcept { return lastRmseMm_; }
 
@@ -53,6 +60,8 @@ public:
 private:
     struct Impl;
     std::unique_ptr<Impl> impl_;
+    double minOverlap_;
+    double maxRmseMm_;
     double lastOverlap_ = 0.0;
     double lastRmseMm_ = 0.0;
     std::vector<double> lastPose_{1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};

@@ -96,7 +96,10 @@ class Fusion:
     the rest are placed in; a frame that cannot be placed is left out.
     """
 
-    def __init__(self, voxel_mm: float = 1.0) -> None: ...
+    def __init__(self, voxel_mm: float = 1.0, min_overlap: float | None = None,
+                 max_rmse_mm: float | None = None) -> None:
+        """min_overlap and max_rmse_mm set what a frame must reach to be
+        merged; left out, they keep the engine's defaults (0.30 and 2.5 mm)."""
     def add(
         self,
         points: npt.ArrayLike,
@@ -130,6 +133,10 @@ class Fusion:
     @property
     def frames(self) -> int: ...
     @property
+    def min_overlap(self) -> float: ...
+    @property
+    def max_rmse_mm(self) -> float: ...
+    @property
     def merged(self) -> int:
         """Frames handed over, and of those, the ones that were merged."""
 
@@ -141,6 +148,9 @@ class FrameFit(TypedDict):
     rmse_mm: float
     """Their RMS distance from it."""
     model_points: int
+    pose: list[float]
+    """Where the last merged frame sits (this one, if merged): a row-major
+    4x4 matrix, shift in millimetres."""
 
 def remove_speckle(
     points: npt.ArrayLike,

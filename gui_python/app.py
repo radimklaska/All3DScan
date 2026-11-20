@@ -17,6 +17,7 @@ to STEP (rea_engine.py):
 
 import argparse
 import math
+import os
 import shutil
 import sys
 import tempfile
@@ -74,6 +75,7 @@ from settings_dialog import SettingsDialog
 from theme_dialog import CustomThemeDialog
 from panels import CameraPanel, ModelPanel, ScanModel, ScanPanel, ScanState, Viewport, tint
 from viewport3d import image_pixels
+from recording import ScanRecorder
 from widgets import RibbonGroup
 
 
@@ -375,10 +377,18 @@ class FusionWorker(QObject):
         super().__init__()
         self._fusion = None
 
+    # Opt-in overrides of what a frame must reach to be merged, for trying
+    # other values live: ALL3DSCAN_FUSION_MIN_OVERLAP (0-1) and
+    # ALL3DSCAN_FUSION_MAX_RMSE_MM. Unset, the engine's defaults apply.
+    ACCEPTANCE_ENVIRONMENT = (("min_overlap", "ALL3DSCAN_FUSION_MIN_OVERLAP"),
+                              ("max_rmse_mm", "ALL3DSCAN_FUSION_MAX_RMSE_MM"))
+
     @pyqtSlot(float)
     def start(self, voxel_mm: float) -> None:
         try:
-            self._fusion = engine.Fusion(voxel_mm=voxel_mm)
+            acceptance = {key: float(os.environ[name])
+                          for key, name in self.ACCEPTANCE_ENVIRONMENT if os.environ.get(name)}
+            self._fusion = engine.Fusion(voxel_mm=voxel_mm, **acceptance)
         except BaseException as exc:
             self._fusion = None
             self.failed.emit(describe(exc))
@@ -427,7 +437,9 @@ class FusionWorker(QObject):
         if self._fusion is None:
             return
         try:
+            started = time.perf_counter()
             fit = self._fusion.add(points, colors, normals, depth_mm=depth_mm)
+            fit["add_s"] = time.perf_counter() - started
             cloud = self._fusion.cloud() if fit["merged"] else None
         except BaseException as exc:
             self.failed.emit(describe(exc))
@@ -628,6 +640,8 @@ class MainWindow(QMainWindow):
         self._fused: tuple | None = None  # the model built from this scan
         self._tracked = 0  # frames the fusion placed on the model
         self._offered = 0  # frames it was given
+        self._recorder = ScanRecorder.from_environment()  # ALL3DSCAN_RECORD_DIR
+        self._depth_range_mm: tuple | None = None  # the range last asked of the POP 4
         self._shown_model: ScanModel | None = None  # the model in the 3D view
         # The camera a scan is being taken with, for building its surface.
         self._intrinsics: tuple = tuple(getattr(self.sensor, "intrinsics", ()))
@@ -1054,6 +1068,19 @@ class MainWindow(QMainWindow):
         self._fusing = False
         self._tracked = self._offered = 0
         self._tracking.setText("Tracking: —")
+        if self._recorder is not None:
+            self._recorder.start({
+                "fusion": self.fusion_action.isChecked(),
+                "fusion_voxel_mm": self.FUSION_VOXEL_MM,
+                "fusion_max_points": self.FUSION_MAX_POINTS,
+                "acceptance_environment": {
+                    name: os.environ.get(name)
+                    for _key, name in FusionWorker.ACCEPTANCE_ENVIRONMENT},
+                "pop4": bool(self._pop4),
+                "exposure_us": self.camera_panel.exposure.value(),
+                "depth_range_mm": self._depth_range_mm,
+                "preset": repr(self.scan_panel.preset),
+            })
         if self.fusion_action.isChecked():
             self.fusion_start_requested.emit(self.FUSION_VOXEL_MM)
         else:
@@ -1102,6 +1129,8 @@ class MainWindow(QMainWindow):
             return
         self.frames += 1
         self.last_frame = frame
+        if self._recorder is not None:
+            self._recorder.frame(frame)
         self.viewport.set_frame_count(self.frames)
         if self.fusion_action.isChecked():
             self._offer_to_fusion(frame)
@@ -1221,6 +1250,8 @@ class MainWindow(QMainWindow):
         self._fusing = True
         self._offered += 1
         step = max(math.ceil(len(frame.points) / self.FUSION_MAX_POINTS), 1)
+        if self._recorder is not None:
+            self._recorder.offered(step)
         self.fuse_requested.emit(frame.points[::step], frame.colors[::step],
                                  frame.normals[::step], frame.depth_mm)
 
@@ -1289,6 +1320,8 @@ class MainWindow(QMainWindow):
 
     def _on_model_ready(self, model, display, fit: dict) -> None:
         self._fusing = False
+        if self._recorder is not None:
+            self._recorder.fit(fit)
         if model is None:
             # The frame would not sit on the model. Say so, and carry on:
             # the next one may well align.
@@ -1392,6 +1425,16 @@ class MainWindow(QMainWindow):
         self._clear_live_view()
         shape = points.shape if points is not None else "none"
         print(f"{name} complete: {self.frames} frames, last point cloud {shape}", flush=True)
+        if self._recorder is not None:
+            fusion = self._fusion_worker._fusion if self._fusion_worker else None
+            written = self._recorder.finish(name, {
+                "frames": self.frames, "offered": self._offered, "tracked": self._tracked,
+                "model_points": int(len(points)) if points is not None else 0,
+                "min_overlap": getattr(fusion, "min_overlap", None),
+                "max_rmse_mm": getattr(fusion, "max_rmse_mm", None),
+            })
+            if written:
+                print(f"{name}: recorded to {written}", flush=True)
 
     def _on_cancelled(self) -> None:
         self._clear_live_view()
@@ -1918,6 +1961,8 @@ class MainWindow(QMainWindow):
 
     def _control(self, name: str, *args) -> None:
         """Has the POP 4 run one of its methods, between captures."""
+        if name == "set_depth_range":
+            self._depth_range_mm = tuple(args)
         if self._pop4:
             self.control_requested.emit(name, args)
 
@@ -1969,6 +2014,7 @@ class MainWindow(QMainWindow):
         told = f"Depth exposure {chosen / 1000:.1f} ms, which saw the most of the object"
         band = result.get("range_mm")
         if band:
+            self._depth_range_mm = tuple(band)
             self.viewport.gauge.set_bands(self.scan_panel.preset.band_edges_mm, band)
             self.scan_panel.show_scanning_distance(*band)
             print(f"auto range: looking {band[0]:.0f}–{band[1]:.0f} mm, where the object is",

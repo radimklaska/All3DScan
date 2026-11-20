@@ -87,7 +87,8 @@ struct FrameFusion::Impl {
     }
 };
 
-FrameFusion::FrameFusion(float voxel_mm) : impl_(std::make_unique<Impl>()) {
+FrameFusion::FrameFusion(float voxel_mm)
+    : impl_(std::make_unique<Impl>()), minOverlap_(kMinOverlap), maxRmseMm_(kMaxRmseMm) {
     if (!(voxel_mm > 0.0f && voxel_mm <= 50.0f)) {
         throw std::invalid_argument("FrameFusion: voxel size must be 0 to 50 mm, got " +
                                     std::to_string(voxel_mm));
@@ -99,6 +100,17 @@ FrameFusion::FrameFusion(float voxel_mm) : impl_(std::make_unique<Impl>()) {
 }
 
 FrameFusion::~FrameFusion() = default;
+
+void FrameFusion::setAcceptance(double minOverlap, double maxRmseMm) {
+    if (!(minOverlap >= 0.0 && minOverlap <= 1.0)) {
+        throw std::invalid_argument("FrameFusion: minimum overlap must be 0 to 1");
+    }
+    if (!(maxRmseMm > 0.0 && maxRmseMm <= 50.0)) {
+        throw std::invalid_argument("FrameFusion: maximum RMSE must be above 0 and at most 50 mm");
+    }
+    minOverlap_ = minOverlap;
+    maxRmseMm_ = maxRmseMm;
+}
 
 uint64_t FrameFusion::modelPoints() const noexcept {
     return impl_->model.points.size();
@@ -154,7 +166,7 @@ bool FrameFusion::add(const float* xyz, uint64_t points, const uint8_t* rgb) {
                                                            kOverlapToleranceMm / kMmPerM);
         lastOverlap_ = quality.overlap;
         lastRmseMm_ = quality.rmseM * kMmPerM;
-        if (lastOverlap_ < kMinOverlap || lastRmseMm_ > kMaxRmseMm) {
+        if (lastOverlap_ < minOverlap_ || lastRmseMm_ > maxRmseMm_) {
             return false; // lost: leave the model as it is rather than smear it
         }
 

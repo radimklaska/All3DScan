@@ -1200,6 +1200,41 @@ class IsolationTests(WindowTestCase):
         self.assertFalse(window.isolate_action.isEnabled())
 
 
+class RecordingTests(WindowTestCase):
+    """ALL3DSCAN_RECORD_DIR keeps a scan's frames for replaying offline."""
+
+    def test_a_scan_is_recorded_with_its_frames_and_fits(self):
+        root = Path(tempfile.mkdtemp(prefix="all3dscan-record-"))
+        self.addCleanup(shutil.rmtree, root, True)
+        with mock.patch.dict(os.environ, {"ALL3DSCAN_RECORD_DIR": str(root)}):
+            window = self.open_window()
+        self.scan(window, frames=6)
+        window.scan_panel.complete()
+        wait_until(lambda: any(root.iterdir()))
+        (recording,) = root.iterdir()
+        manifest = json.loads((recording / "manifest.json").read_text(encoding="utf-8"))
+        frames = manifest["frames"]
+        self.assertGreaterEqual(len(frames), 6)
+        self.assertEqual(manifest["summary"]["frames"], len(frames))
+        self.assertEqual(manifest["settings"]["fusion_voxel_mm"], window.FUSION_VOXEL_MM)
+        offered = [entry for entry in frames if entry["offered"]]
+        self.assertTrue(offered, "no frame reached the fusion")
+        fitted = [entry["fit"] for entry in offered if "fit" in entry]
+        self.assertTrue(fitted)
+        for fit in fitted:
+            self.assertEqual(len(fit["pose"]), 16)
+            self.assertGreaterEqual(fit["add_s"], 0.0)
+        first = np.load(recording / frames[0]["file"])
+        self.assertEqual(first["points"].shape, (frames[0]["points"], 3))
+        self.assertEqual(first["depth_mm"].dtype, np.uint16)
+
+    def test_nothing_is_recorded_without_the_variable(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("ALL3DSCAN_RECORD_DIR", None)
+            window = self.open_window()
+        self.assertIsNone(window._recorder)
+
+
 class InterchangeTests(WindowTestCase):
     """Scans from other tools and other scanners: opening them, and saving
     one where another tool can open it."""

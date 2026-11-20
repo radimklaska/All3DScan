@@ -44,6 +44,13 @@ mod ffi {
         #[cxx_name = "lastRmseMm"]
         fn last_rmse_mm(self: &FrameFusion) -> f64;
         fn clear(self: Pin<&mut FrameFusion>);
+        #[cxx_name = "setAcceptance"]
+        fn set_acceptance(self: Pin<&mut FrameFusion>, min_overlap: f64, max_rmse_mm: f64)
+            -> Result<()>;
+        #[cxx_name = "minOverlap"]
+        fn min_overlap(self: &FrameFusion) -> f64;
+        #[cxx_name = "maxRmseMm"]
+        fn max_rmse_mm(self: &FrameFusion) -> f64;
     }
 }
 
@@ -96,6 +103,9 @@ pub struct FrameFit {
     pub rmse_mm: f64,
     /// Points in the model after this frame.
     pub model_points: u64,
+    /// Where the last merged frame was placed (this one, if merged), as a
+    /// row-major 4x4 matrix with its shift in millimetres.
+    pub pose: [f64; 16],
 }
 
 /// A depth view kept so that a surface can be built from the scan later.
@@ -183,12 +193,27 @@ impl Fusion {
             self.model.colors.extend_from_slice(&frame.colors);
             self.model = processing::voxel_downsample_cloud(&self.model, self.voxel_mm)?;
         }
+        let mut pose = [0.0; 16];
+        pose.copy_from_slice(self.inner.last_pose().as_slice());
         Ok(FrameFit {
             merged,
             overlap: self.inner.last_overlap(),
             rmse_mm: self.inner.last_rmse_mm(),
             model_points: self.model.points.len() as u64,
+            pose,
         })
+    }
+
+    /// What a frame must reach to be merged: the share of its points on the
+    /// model's surface, and their RMS distance from it in millimetres.
+    pub fn set_acceptance(&mut self, min_overlap: f64, max_rmse_mm: f64)
+        -> Result<(), cxx::Exception> {
+        self.inner.pin_mut().set_acceptance(min_overlap, max_rmse_mm)
+    }
+
+    /// The current minimum overlap and maximum RMSE, as set_acceptance takes them.
+    pub fn acceptance(&self) -> (f64, f64) {
+        (self.inner.min_overlap(), self.inner.max_rmse_mm())
     }
 
     /// Keeps this frame's depth image, if the scanner has moved far enough
@@ -514,6 +539,48 @@ mod tests {
         assert!(fusion.cloud().points.is_empty());
         let fit = fusion.add(&frame).unwrap();
         assert_eq!((fit.overlap, fit.rmse_mm), (0.0, 0.0)); // the first frame again
+    }
+
+    #[test]
+    fn the_pose_says_where_a_moved_frame_was_put() {
+        let mut fusion = Fusion::new(1.0).unwrap();
+        let first = corner(0.5);
+        let fit = fusion.add(&first).unwrap();
+        let identity = [1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0];
+        assert_eq!(fit.pose, identity, "the first frame fixes the axes");
+
+        let second = moved(&first, 4.0, Vector3::new(3.0, -2.0, 5.0));
+        let fit = fusion.add(&second).unwrap();
+        assert!(fit.merged);
+        // The pose carries the moved frame back onto the first one.
+        let m = fit.pose;
+        let place = |p: &Point3<f32>| {
+            let (x, y, z) = (f64::from(p.x), f64::from(p.y), f64::from(p.z));
+            Point3::new(
+                m[0] * x + m[1] * y + m[2] * z + m[3],
+                m[4] * x + m[5] * y + m[6] * z + m[7],
+                m[8] * x + m[9] * y + m[10] * z + m[11],
+            )
+        };
+        let worst = second
+            .points
+            .iter()
+            .zip(&first.points)
+            .map(|(moved, original)| (place(moved) - original.cast::<f64>()).norm())
+            .fold(0.0, f64::max);
+        assert!(worst < 1.0, "a point landed {worst} mm from where it came from");
+    }
+
+    #[test]
+    fn the_acceptance_is_kept_and_checked() {
+        let mut fusion = Fusion::new(1.0).unwrap();
+        assert_eq!(fusion.acceptance(), (0.30, 2.5), "the defaults");
+        fusion.set_acceptance(0.9, 1.2).unwrap();
+        assert_eq!(fusion.acceptance(), (0.9, 1.2));
+        for (overlap, rmse) in [(1.5, 1.0), (-0.1, 1.0), (0.5, 0.0), (0.5, f64::NAN)] {
+            assert!(fusion.set_acceptance(overlap, rmse).is_err(), "{overlap} {rmse}");
+        }
+        assert_eq!(fusion.acceptance(), (0.9, 1.2), "a refused change leaves it as it was");
     }
 
     #[test]
