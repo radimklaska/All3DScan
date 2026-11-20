@@ -1200,6 +1200,24 @@ class IsolationTests(WindowTestCase):
         self.assertFalse(window.isolate_action.isEnabled())
 
 
+class DepthRangeOverrideTests(unittest.TestCase):
+    def test_the_variable_sets_the_range_and_bad_values_are_ignored(self):
+        cases = {"200-650": (200.0, 650.0), "": None, "650-200": None, "x-1": None,
+                 "10-300": None, "250-500": (250.0, 500.0)}
+        for text, expected in cases.items():
+            with mock.patch.dict(os.environ, {"ALL3DSCAN_DEPTH_RANGE": text}):
+                self.assertEqual(app.depth_range_override(), expected, text)
+
+    def test_the_window_asks_the_pop4_for_the_overridden_range(self):
+        with mock.patch.dict(os.environ, {"ALL3DSCAN_DEPTH_RANGE": "200-650"}):
+            window = WindowTestCase.open_window(self)
+            window._pop4 = True
+            sent = []
+            window.control_requested.connect(lambda name, args: sent.append((name, args)))
+            window._control("set_depth_range", 250.0, 500.0)
+        self.assertIn(("set_depth_range", (200.0, 650.0)), sent)
+
+
 class RecordingTests(WindowTestCase):
     """ALL3DSCAN_RECORD_DIR keeps a scan's frames for replaying offline."""
 

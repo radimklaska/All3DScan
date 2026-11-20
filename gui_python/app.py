@@ -76,6 +76,19 @@ from theme_dialog import CustomThemeDialog
 from panels import CameraPanel, ModelPanel, ScanModel, ScanPanel, ScanState, Viewport, tint
 from viewport3d import image_pixels
 from recording import ScanRecorder
+
+
+def depth_range_override() -> tuple[float, float] | None:
+    """ALL3DSCAN_DEPTH_RANGE=<near>-<far> (mm): the working distance the POP 4
+    searches, whatever the preset says, and Auto leaves it alone. For
+    recording with the background in view; unset, the preset decides."""
+    text = os.environ.get("ALL3DSCAN_DEPTH_RANGE", "")
+    near, _, far = text.partition("-")
+    try:
+        near_mm, far_mm = float(near), float(far)
+    except ValueError:
+        return None
+    return (near_mm, far_mm) if 50 <= near_mm < far_mm <= 2000 else None
 from widgets import RibbonGroup
 
 
@@ -266,6 +279,8 @@ class ScanWorker(QObject):
                                   "range_mm": self._narrow_range(whole_range)})
 
     def _narrow_range(self, whole: tuple[float, float]) -> tuple[float, float] | None:
+        if depth_range_override() is not None:
+            return None  # ALL3DSCAN_DEPTH_RANGE holds the range where it was put
         """Narrows the depth search onto the band the object fills.
 
         The decoder is told where to look, and looking over a narrower band
@@ -1961,6 +1976,8 @@ class MainWindow(QMainWindow):
 
     def _control(self, name: str, *args) -> None:
         """Has the POP 4 run one of its methods, between captures."""
+        if name == "set_depth_range" and depth_range_override() is not None:
+            args = depth_range_override()
         if name == "set_depth_range":
             self._depth_range_mm = tuple(args)
         if self._pop4:

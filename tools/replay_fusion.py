@@ -51,9 +51,52 @@ def step_between(a: np.ndarray, b: np.ndarray) -> tuple[float, float]:
     return shift, math.degrees(math.acos(max(-1.0, min(1.0, cosine))))
 
 
+def axis_angle(rotation: np.ndarray) -> tuple[np.ndarray, float]:
+    """The unit axis and angle (degrees) of a rotation matrix."""
+    angle = math.acos(max(-1.0, min(1.0, (np.trace(rotation) - 1.0) / 2.0)))
+    axis = np.array([rotation[2, 1] - rotation[1, 2], rotation[0, 2] - rotation[2, 0],
+                     rotation[1, 0] - rotation[0, 1]])
+    norm = np.linalg.norm(axis)
+    return (axis / norm if norm > 1e-12 else np.zeros(3)), math.degrees(angle)
+
+
+def still_report(result: dict, centre: np.ndarray) -> str:
+    """For a stretch where nothing moved, every pose should be the identity.
+    Scores each placed pose against that: its rotation, and how far it moves
+    the scene's centre; and whether the step rotations share one axis, which
+    is ICP sliding along a direction the geometry does not pin down."""
+    poses = result["poses"]
+    if len(poses) < 2:
+        return "  still: too few placed frames"
+    angles, shifts, axes = [], [], []
+    for _number, pose in poses:
+        _axis, angle = axis_angle(pose[:3, :3])
+        angles.append(angle)
+        shifts.append(float(np.linalg.norm(pose[:3, :3] @ centre + pose[:3, 3] - centre)))
+    for (_a, before), (_b, after) in zip(poses, poses[1:]):
+        axis, angle = axis_angle((np.linalg.inv(before) @ after)[:3, :3])
+        if angle > 0.05:
+            axes.append(axis * angle)
+    if axes:
+        weighted = np.array(axes)
+        # Sign-free clustering: the dominant direction of the step axes, and
+        # the share of the total rotation that lies along it.
+        _u, sv, vt = np.linalg.svd(weighted, full_matrices=False)
+        dominant = vt[0]
+        share = sv[0] ** 2 / max((sv ** 2).sum(), 1e-12)
+        axis_text = (f"step axes: {share:.0%} of the rotation about one axis "
+                     f"[{dominant[0]:+.2f} {dominant[1]:+.2f} {dominant[2]:+.2f}] (camera axes)")
+    else:
+        axis_text = "step axes: no rotation"
+    return (f"  still ({len(poses)} placed): drift from identity max {max(angles):.2f} deg / "
+            f"{max(shifts):.1f} mm at the scene centre, final {angles[-1]:.2f} deg / "
+            f"{shifts[-1]:.1f} mm\n  {axis_text}")
+
+
 def replay(recording: Path, frames: list[dict], which: str, voxel_mm: float,
            min_overlap: float | None, max_rmse_mm: float | None,
-           jump_mm: float, jump_deg: float, options: dict | None = None) -> dict:
+           jump_mm: float, jump_deg: float, options: dict | None = None,
+           first: int = 0, last: int = 10**9, zclip: tuple | None = None) -> dict:
     fusion = engine.Fusion(voxel_mm, min_overlap=min_overlap, max_rmse_mm=max_rmse_mm,
                            **(options or {}))
     fits, add_seconds = [], []
@@ -61,20 +104,30 @@ def replay(recording: Path, frames: list[dict], which: str, voxel_mm: float,
     last_time = None
     steps = []  # (frame number, mm, degrees, seconds since the last merge)
     first_pose = None
+    poses = []
     for number, entry in enumerate(frames):
+        if number < first or number >= last:
+            continue
         if which == "offered" and not entry.get("offered"):
             continue
         data = np.load(recording / entry["file"])
         if not len(data["points"]):
             continue
         step = int(entry.get("step", 1))
+        points, colors, normals = (data["points"][::step], data["colors"][::step],
+                                   data["normals"][::step])
+        if zclip is not None:  # narrow the working distance after the fact
+            keep = (points[:, 2] >= zclip[0]) & (points[:, 2] <= zclip[1])
+            points, colors, normals = points[keep], colors[keep], normals[keep]
+            if not len(points):
+                continue
         started = time.perf_counter()
-        fit = fusion.add(data["points"][::step], data["colors"][::step],
-                         data["normals"][::step], depth_mm=data["depth_mm"])
+        fit = fusion.add(points, colors, normals, depth_mm=data["depth_mm"])
         add_seconds.append((time.perf_counter() - started, fit["model_points"]))
         fits.append((number, fit))
         if fit.get("placed", fit["merged"]):
             pose = pose_matrix(fit["pose"])
+            poses.append((number, pose))
             if first_pose is None:
                 first_pose = pose
             if last_pose is not None:
@@ -89,7 +142,7 @@ def replay(recording: Path, frames: list[dict], which: str, voxel_mm: float,
         "frames": which, "given": len(fits), "merged": len(merged), "placed": len(placed),
         "options": options or {},
         "model_points": fusion.model_points, "fits": fits, "steps": steps, "jumps": jumps,
-        "add_seconds": add_seconds,
+        "add_seconds": add_seconds, "poses": poses,
     }
     if first_pose is not None and last_pose is not None:
         result["end_vs_start"] = step_between(first_pose, last_pose)
@@ -174,6 +227,13 @@ def main() -> int:
     parser.add_argument("--jump-deg", type=float, default=10.0)
     parser.add_argument("--check", action="store_true",
                         help="compare with the fits the app recorded (use --frames offered)")
+    parser.add_argument("--range", default="0:", metavar="FIRST:LAST",
+                        help="only frames FIRST to LAST-1 (recording order)")
+    parser.add_argument("--zclip", metavar="NEAR:FAR",
+                        help="keep only points this far away (mm), as a narrower range would")
+    parser.add_argument("--still", action="store_true",
+                        help="the range is one where nothing moved: score the poses "
+                             "against the identity")
     parser.add_argument("--config", action="append", default=[],
                         help="tracking options, e.g. max_step_mm=10,keyframe_mm=5; repeat to compare")
     parser.add_argument("--ply", type=Path, help="write the fused model here")
@@ -194,10 +254,22 @@ def main() -> int:
     configs = [dict((key, float(value)) for key, value in
                     (item.split("=") for item in text.split(",") if item)) for text in args.config]
     runs = [(o, r, c) for o, r in pairs for c in (configs or [{}])]
+    first_text, _, last_text = args.range.partition(":")
+    first, last = int(first_text or 0), int(last_text or 10**9)
+    centre = None
+    if args.still:
+        for entry in frames[first:last]:
+            points = np.load(args.recording / entry["file"])["points"]
+            if len(points):
+                centre = points.mean(axis=0).astype(np.float64)
+                break
     for overlap, rmse, options in runs:
         result = replay(args.recording, frames, args.frames, voxel, overlap, rmse,
-                        args.jump_mm, args.jump_deg, options)
+                        args.jump_mm, args.jump_deg, options, first, last,
+                        tuple(map(float, args.zclip.split(":"))) if args.zclip else None)
         print(report(result, args.verbose))
+        if args.still and centre is not None:
+            print(still_report(result, centre))
         if args.check:
             print("  " + check_against_live(frames, result["fits"]))
         if args.ply and len(runs) == 1:
