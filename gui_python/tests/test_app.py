@@ -1217,6 +1217,25 @@ class InterchangeTests(WindowTestCase):
         self.assertIsNotNone(model.points, "the scan produced no cloud to save")
         return model
 
+    def test_the_file_menu_saves_and_opens_a_scan(self):
+        # Through the menu, as people do it, not through save_scan() itself:
+        # QAction.triggered carries a checked flag, and that False once
+        # arrived as the path and crashed the save.
+        window = self.open_window()
+        model = self.a_model(window)
+        target = self.scratch() / "from-menu.ply"
+        filters, by_filter = window._file_filters()
+        chosen = next(name for name, fmt in by_filter.items() if fmt == "ply")
+        with mock.patch.object(app.QFileDialog, "getSaveFileName",
+                               return_value=(str(target), chosen)):
+            window.save_item.trigger()
+        self.assertTrue(target.exists(), "File > Save scan as… wrote nothing")
+        with mock.patch.object(app.QFileDialog, "getOpenFileName",
+                               return_value=(str(target), "")):
+            window.open_item.trigger()
+        opened = window.model_panel.current_model()
+        self.assertEqual(len(opened.points), len(model.points))
+
     def test_a_scan_can_be_saved_and_opened_again(self):
         window = self.open_window()
         model = self.a_model(window)

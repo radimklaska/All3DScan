@@ -805,7 +805,9 @@ class MainWindow(QMainWindow):
 
         def item(text: str, slot, shortcut: str = "", tip: str = "") -> QAction:
             action = QAction(text, self)
-            action.triggered.connect(slot)
+            # triggered carries a "checked" flag; passed on, it lands in the
+            # slot's first parameter (False as the path of Save scan as…).
+            action.triggered.connect(lambda _checked=False: slot())
             if shortcut:
                 action.setShortcut(QKeySequence(shortcut))
             if tip:
